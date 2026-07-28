@@ -8,9 +8,9 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 API_ID = 7219208
 API_HASH = "64342b78a8d90e3f691d7a3a09112e7b"
 
-# ضع التوكن الذي استخرجته (No workspace) هنا
+# التوكن الصحيح الخاص بحسابك في رايلوي
 RAILWAY_API_KEYS = [
-    "ضع_التوكن_الجديد_هنا",  
+    "bc397469-c89b-4841-8395-d551762c5a7d",  
 ]
 
 # قاعدة بيانات محلية لحفظ التنصيبات
@@ -34,7 +34,6 @@ def deploy_to_railway(session_string, user_id):
         "SESSION": session_string
     }
 
-    # سنختبر الحساب الأول مباشرة
     api_key = RAILWAY_API_KEYS[0]
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -56,7 +55,6 @@ def deploy_to_railway(session_string, user_id):
             "variables": {"name": f"Tython-User-{user_id}"}
         }, headers=headers).json()
 
-        # التعديل: هنا سنلتقط رسالة رايلوي الأصلية ونرسلها لك في التليجرام
         if "errors" in res1:
             error_msg = res1['errors'][0]['message']
             return False, f"⚠️ تم الرفض من Railway أثناء إنشاء المشروع.\nالسبب الرسمي: `{error_msg}`"
