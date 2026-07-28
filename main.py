@@ -2,6 +2,7 @@ import os
 import asyncio
 import requests
 import sqlite3
+import secrets
 from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
 from telethon.errors import (
@@ -50,6 +51,7 @@ def deploy_independent_project(session_string, user_bot_token, user_id):
         }
 
         try:
+            # 1. إنشاء المشروع
             q_project = """mutation projectCreate($name: String!) { projectCreate(input: { name: $name }) { id environments { edges { node { id } } } } }""" 
             res_proj = requests.post(url, json={"query": q_project, "variables": {"name": f"Tython-User-{user_id}"}}, headers=headers).json() 
             
@@ -64,12 +66,26 @@ def deploy_independent_project(session_string, user_bot_token, user_id):
             project_id = res_proj["data"]["projectCreate"]["id"] 
             environment_id = res_proj["data"]["projectCreate"]["environments"]["edges"][0]["node"]["id"] 
 
+            # 2. إنشاء قاعدة البيانات Postgres
             q_service_clean = """mutation serviceCreate($projectId: String!, $name: String!, $source: ServiceSourceInput!) { serviceCreate(input: { projectId: $projectId, name: $name, source: $source }) { id } }""" 
-            
             res_db = requests.post(url, json={"query": q_service_clean, "variables": {"projectId": project_id, "name": "postgres", "source": { "image": "postgres:15" }}}, headers=headers).json() 
-            res_repo = requests.post(url, json={"query": q_service_clean, "variables": {"projectId": project_id, "name": "tython-worker", "source": { "repo": "https://github.com/mustafanqnq-cmd/sarmdi-web-mine.git" }}}, headers=headers).json() 
-            service_id = res_repo["data"]["serviceCreate"]["id"] 
+            db_service_id = res_db["data"]["serviceCreate"]["id"]
 
+            # 3. حقن فارات قاعدة البيانات
+            db_password = secrets.token_hex(12) # توليد كلمة مرور عشوائية قوية لكل مستخدم
+            db_vars = {
+                "POSTGRES_USER": "postgres",
+                "POSTGRES_PASSWORD": db_password,
+                "POSTGRES_DB": "tython_db"
+            }
+            q_vars = """mutation variableCollectionUpsert($input: VariableCollectionUpsertInput!) { variableCollectionUpsert(input: $input) }""" 
+            requests.post(url, json={"query": q_vars, "variables": {"input": {"projectId": project_id, "environmentId": environment_id, "serviceId": db_service_id, "variables": db_vars}}}, headers=headers)
+
+            # 4. إنشاء خدمة السورس (الأنشر)
+            res_repo = requests.post(url, json={"query": q_service_clean, "variables": {"projectId": project_id, "name": "tython-worker", "source": { "repo": "https://github.com/mustafanqnq-cmd/sarmdi-web-mine.git" }}}, headers=headers).json() 
+            worker_service_id = res_repo["data"]["serviceCreate"]["id"] 
+
+            # 5. حقن فارات السورس (مع ربط رابط الداتا بيز الداخلي)
             env_variables = {
                 "API_HASH": str(API_HASH),
                 "API_ID": str(API_ID),
@@ -79,11 +95,18 @@ def deploy_independent_project(session_string, user_bot_token, user_id):
                 "TZ": "Asia/Baghdad", 
                 "SESSION": session_string,
                 "BOT_TOKEN": user_bot_token,
-                "DATABASE_URL": "${{postgres.DATABASE_URL}}" 
+                "DATABASE_URL": f"postgresql://postgres:{db_password}@postgres.railway.internal:5432/tython_db" 
             }
+            requests.post(url, json={"query": q_vars, "variables": {"input": {"projectId": project_id, "environmentId": environment_id, "serviceId": worker_service_id, "variables": env_variables}}}, headers=headers) 
 
-            q_vars = """mutation variableCollectionUpsert($input: VariableCollectionUpsertInput!) { variableCollectionUpsert(input: $input) }""" 
-            requests.post(url, json={"query": q_vars, "variables": {"input": {"projectId": project_id, "environmentId": environment_id, "serviceId": service_id, "variables": env_variables}}}, headers=headers) 
+            # 6. إجبار رايلوي على بدء التنصيب فوراً
+            q_deploy = """mutation deploymentCreate($input: DeploymentCreateInput!) { deploymentCreate(input: $input) { id } }"""
+            
+            # تنصيب قاعدة البيانات
+            requests.post(url, json={"query": q_deploy, "variables": {"input": {"projectId": project_id, "environmentId": environment_id, "serviceId": db_service_id}}}, headers=headers)
+            
+            # تنصيب سورس تايثون
+            requests.post(url, json={"query": q_deploy, "variables": {"input": {"projectId": project_id, "environmentId": environment_id, "serviceId": worker_service_id}}}, headers=headers)
 
             return True, project_id
         except Exception as e:
@@ -162,7 +185,7 @@ async def callback_handler(event):
         await start_deployment_process(event.chat_id, user_id)
 
 async def start_deployment_process(chat_id, user_id):
-    """ نظام المحادثة لاستخراج الجلسة والتوكن والتنصيب (نفس الكود السابق للمستخدم) """
+    """ نظام المحادثة لاستخراج الجلسة والتوكن والتنصيب """
     async with bot.conversation(chat_id, timeout=300) as conv:
         try:
             await conv.send_message("**⎉╎أرسل الآن رقم هاتفك مع الرمز الدولي (مثال: +964...) 📱**")
