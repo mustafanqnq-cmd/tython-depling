@@ -9,7 +9,7 @@ API_ID = 7219208
 API_HASH = "64342b78a8d90e3f691d7a3a09112e7b"
 
 # توكن حساب رايلوي
-RAILWAY_API_KEY = "f44078b9-50cb-4029-8bbc-6f6554de43d8"
+RAILWAY_API_KEY = "4f08e771-2c65-4bb2-a0ee-eb9acff7a867"
 
 conn = sqlite3.connect('deployments.db', check_same_thread=False)
 cursor = conn.cursor()
