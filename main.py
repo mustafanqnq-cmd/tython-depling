@@ -90,29 +90,27 @@ def deploy_to_railway(session_string, user_id):
 
         service_id = res2["data"]["serviceCreate"]["id"]
 
-        # الخطوة 3: حقن الفارات
+        # الخطوة 3: حقن الفارات (تم التصحيح هنا لاستخدام VariableCollectionUpsertInput)
         query_upsert_vars = """
-        mutation variableCollectionUpsert($projectId: String!, $environmentId: String!, $serviceId: String!, $variables: Map!) {
-          variableCollectionUpsert(input: {
-            projectId: $projectId,
-            environmentId: $environmentId,
-            serviceId: $serviceId,
-            variables: $variables
-          })
+        mutation variableCollectionUpsert($input: VariableCollectionUpsertInput!) {
+          variableCollectionUpsert(input: $input)
         }
         """
         res3 = requests.post(url, json={
             "query": query_upsert_vars,
             "variables": {
-                "projectId": project_id,
-                "environmentId": environment_id,
-                "serviceId": service_id,
-                "variables": env_variables
+                "input": {
+                    "projectId": project_id,
+                    "environmentId": environment_id,
+                    "serviceId": service_id,
+                    "variables": env_variables
+                }
             }
         }, headers=headers).json()
 
         if "errors" in res3:
-            return False, f"خطأ في حقن الفارات: {res3['errors'][0]['message']}"
+            error_msg3 = res3['errors'][0]['message']
+            return False, f"خطأ في حقن الفارات: {error_msg3}"
 
         return True, project_id
 
@@ -135,7 +133,7 @@ async def deploy_handler(event):
         await event.reply(f"⚠️ لديك تنصيب قائم بالفعل!\nمعرف مشروعك: `{existing[0]}`")
         return
 
-    msg = await event.reply("⏳ جاري الاتصال بـ Railway... يرجى الانتظار.")
+    msg = await event.reply("⏳ جاري الاتصال بـ Railway وتنصيب السورس... يرجى الانتظار.")
 
     success, result = deploy_to_railway(session_string, user_id)
 
@@ -143,7 +141,7 @@ async def deploy_handler(event):
         project_id = result
         cursor.execute('INSERT INTO users (user_id, project_id) VALUES (?, ?)', (user_id, project_id))
         conn.commit()
-        await msg.edit(f"✅ **تم التنصيب وحقن الفارات بنجاح!**\nمعرف المشروع: `{project_id}`")
+        await msg.edit(f"✅ **تم التنصيب وحقن الفارات بنجاح تام!**\nمعرف المشروع: `{project_id}`")
     else:
         await msg.edit(f"❌ **فشل التنصيب:**\n\n{result}")
 
