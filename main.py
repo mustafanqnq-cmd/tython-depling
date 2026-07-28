@@ -2,7 +2,8 @@ import os
 import asyncio
 import requests
 import sqlite3
-import secrets
+import asyncpg # تأكد من إضافتها في requirements.txt
+from urllib.parse import urlparse
 from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
 from telethon.errors import (
@@ -10,9 +11,14 @@ from telethon.errors import (
     FloodWaitError,
 )
 
-# ⪼ استدعاء التوكن وأيدي المطور من بيئة الاستضافة
+# ⪼ استدعاء فارات التحكم من بيئة الاستضافة
 BOT_TOKEN = os.environ.get("BOT_TOKEN") 
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 0)) 
+
+# === [ الفارات الجديدة المطلوبة من رايلوي ] ===
+RAILWAY_PROJECT_ID = os.environ.get("RAILWAY_PROJECT_ID") # أيدي المشروع الأساسي
+RAILWAY_ENV_ID = os.environ.get("RAILWAY_ENV_ID") # أيدي البيئة (Environment)
+CENTRAL_DB_URL = os.environ.get("CENTRAL_DB_URL") # رابط الداتا بيز المركزية
 
 API_ID = 7219208 
 API_HASH = "64342b78a8d90e3f691d7a3a09112e7b" 
@@ -20,14 +26,11 @@ API_HASH = "64342b78a8d90e3f691d7a3a09112e7b"
 # ⪼ إعداد قاعدة البيانات المحلية للبوت
 conn = sqlite3.connect('deployments.db', check_same_thread=False) 
 cursor = conn.cursor() 
-cursor.execute('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, project_id TEXT)') 
+cursor.execute('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, service_id TEXT)') 
 cursor.execute('CREATE TABLE IF NOT EXISTS api_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT UNIQUE, is_full BOOLEAN DEFAULT 0)')
 conn.commit() 
 
-# ⪼ حالة البوت للتحكم بالتشغيل والإطفاء (الآن تعمل فعلياً 😂)
 bot_config = {"is_active": True}
-
-# ⪼ تهيئة البوت
 bot = TelegramClient('deployer_bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN) 
 
 def get_active_api_key():
@@ -39,251 +42,178 @@ def mark_key_as_full(api_key):
     cursor.execute("UPDATE api_keys SET is_full = 1 WHERE key = ?", (api_key,))
     conn.commit()
 
-def deploy_independent_project(session_string, user_bot_token, user_id):
-    url = "https://backboard.railway.app/graphql/v2" 
+def railway_query(query, variables, api_key):
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    try:
+        res = requests.post("https://backboard.railway.app/graphql/v2", json={"query": query, "variables": variables}, headers=headers, timeout=30).json()
+        if "errors" in res and res["errors"]:
+            return None, res["errors"][0]["message"]
+        return res.get("data"), None
+    except Exception as e:
+        return None, str(e)
 
-    while True:
-        api_key = get_active_api_key()
-        
-        if not api_key:
-            return False, "⚠️ عذراً، نفذت مساحات الاستضافة حالياً. يرجى إبلاغ المطور."
-
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json" 
-        }
-
-        try:
-            # 1. إنشاء المشروع
-            q_project = """mutation projectCreate($name: String!) { projectCreate(input: { name: $name }) { id environments { edges { node { id } } } } }""" 
-            res_proj = requests.post(url, json={"query": q_project, "variables": {"name": f"Tython-User-{user_id}"}}, headers=headers).json() 
+async def create_user_logical_database(user_id):
+    """ إنشاء قاعدة بيانات فرعية معزولة للمستخدم داخل القاعدة المركزية """
+    db_name = f"tython_user_{user_id}"
+    try:
+        # الاتصال بالقاعدة المركزية
+        sys_conn = await asyncpg.connect(CENTRAL_DB_URL)
+        await sys_conn.execute(f'CREATE DATABASE "{db_name}"')
+        await sys_conn.close()
+    except Exception as e:
+        if "already exists" not in str(e).lower():
+            return None, f"فشل إنشاء الداتا بيز المعزولة: {e}"
             
-            if "errors" in res_proj:
-                error_msg = res_proj['errors'][0]['message'].lower()
-                if "limit" in error_msg or "exceeded" in error_msg or "plan" in error_msg:
-                    mark_key_as_full(api_key)
-                    continue 
-                else:
-                    return False, f"⚠️ خطأ في رايلوي: `{res_proj['errors'][0]['message']}`" 
-            
-            project_id = res_proj["data"]["projectCreate"]["id"] 
-            environment_id = res_proj["data"]["projectCreate"]["environments"]["edges"][0]["node"]["id"] 
+    # تكوين الرابط الجديد الخاص بالمستخدم فقط
+    parsed = urlparse(CENTRAL_DB_URL)
+    new_url = parsed._replace(path=f"/{db_name}").geturl()
+    return new_url, None
 
-            # ==========================================
-            # بناء قاعدة البيانات (بدون تكريش وبالاسم الرسمي)
-            # ==========================================
-            # 2. إنشاء هيكل فارغ باسم PostgreSQL (لكي يضع رايلوي صورة الفيل)
-            q_service_create = """mutation serviceCreate($projectId: String!, $name: String!) { serviceCreate(input: { projectId: $projectId, name: $name }) { id } }"""
-            res_db = requests.post(url, json={"query": q_service_create, "variables": {"projectId": project_id, "name": "PostgreSQL"}}, headers=headers).json()
-            db_service_id = res_db["data"]["serviceCreate"]["id"]
+async def deploy_user_service(session_string, user_bot_token, user_id):
+    api_key = get_active_api_key()
+    if not api_key:
+        return False, "⚠️ عذراً، لا يوجد مفتاح API نشط."
 
-            # 3. حقن كلمة المرور والفارات قبل تشغيل القاعدة
-            db_password = secrets.token_hex(12) 
-            db_vars = {
-                "POSTGRES_USER": "postgres",
-                "POSTGRES_PASSWORD": db_password,
-                "POSTGRES_DB": "tython_db",
-                "PGDATA": "/var/lib/postgresql/data/pgdata" # لضمان استقرار الملفات
-            }
-            q_vars = """mutation variableCollectionUpsert($input: VariableCollectionUpsertInput!) { variableCollectionUpsert(input: $input) }""" 
-            requests.post(url, json={"query": q_vars, "variables": {"input": {"projectId": project_id, "environmentId": environment_id, "serviceId": db_service_id, "variables": db_vars}}}, headers=headers)
+    # 1. إنشاء الداتا بيز المعزولة للمستخدم
+    user_db_url, db_err = await create_user_logical_database(user_id)
+    if db_err:
+        return False, db_err
 
-            # 4. الآن نربط الإصدار 18 بالهيكل (سيبدأ التشغيل وهو يحمل كلمة المرور، ولن يكرش!)
-            q_service_update = """mutation serviceUpdate($id: String!, $source: ServiceSourceInput!) { serviceUpdate(id: $id, input: { source: $source }) { id } }"""
-            requests.post(url, json={"query": q_service_update, "variables": {"id": db_service_id, "source": {"image": "postgres:18"}}}, headers=headers)
+    # 2. إنشاء خدمة سورس تايثون داخل نفس المشروع! (لتجنب الحظر)
+    q_service_create = """mutation serviceCreate($projectId: String!, $name: String!, $source: ServiceSourceInput!) { serviceCreate(input: { projectId: $projectId, name: $name, source: $source }) { id } }""" 
+    data_svc, err_svc = railway_query(q_service_create, {
+        "projectId": RAILWAY_PROJECT_ID, 
+        "name": f"Tython-Worker-{user_id}", 
+        "source": {"repo": "https://github.com/mustafanqnq-cmd/sarmdi-web-mine.git"}
+    }, api_key)
+    
+    if err_svc:
+        if "limit" in err_svc.lower():
+            mark_key_as_full(api_key)
+        return False, f"⚠️ خطأ إنشاء خدمة السورس: `{err_svc}`"
+    
+    worker_service_id = data_svc["serviceCreate"]["id"] 
 
-            # ==========================================
-            # بناء سورس تايثون
-            # ==========================================
-            # 5. إنشاء هيكل فارغ للسورس
-            res_repo = requests.post(url, json={"query": q_service_create, "variables": {"projectId": project_id, "name": "Tython-Worker"}}, headers=headers).json()
-            worker_service_id = res_repo["data"]["serviceCreate"]["id"]
+    # 3. حقن الفارات بالداتا بيز المعزولة
+    env_variables = {
+        "API_HASH": str(API_HASH),
+        "API_ID": str(API_ID),
+        "ENV": ".",
+        "LAUNCHER_PROXY_URL": "https://falling-leafgithub-proxy.mustafanqnq.workers.dev/", 
+        "LAUNCHER_SECRET": "SUPHE999", 
+        "TZ": "Asia/Baghdad", 
+        "SESSION": session_string,
+        "BOT_TOKEN": user_bot_token,
+        "DATABASE_URL": user_db_url # الرابط المعزول الجديد!
+    }
+    
+    q_vars = """mutation variableCollectionUpsert($input: VariableCollectionUpsertInput!) { variableCollectionUpsert(input: $input) }""" 
+    _, err_v2 = railway_query(q_vars, {
+        "input": {"projectId": RAILWAY_PROJECT_ID, "environmentId": RAILWAY_ENV_ID, "serviceId": worker_service_id, "variables": env_variables}
+    }, api_key)
+    
+    if err_v2:
+        return False, f"⚠️ خطأ حقن الفارات: `{err_v2}`"
 
-            # 6. حقن فارات السورس (مع ربط رابط الداتا بيز الداخلي)
-            env_variables = {
-                "API_HASH": str(API_HASH),
-                "API_ID": str(API_ID),
-                "ENV": ".",
-                "LAUNCHER_PROXY_URL": "https://falling-leafgithub-proxy.mustafanqnq.workers.dev/", 
-                "LAUNCHER_SECRET": "SUPHE999", 
-                "TZ": "Asia/Baghdad", 
-                "SESSION": session_string,
-                "BOT_TOKEN": user_bot_token,
-                "DATABASE_URL": f"postgresql://postgres:{db_password}@postgres.railway.internal:5432/tython_db" 
-            }
-            requests.post(url, json={"query": q_vars, "variables": {"input": {"projectId": project_id, "environmentId": environment_id, "serviceId": worker_service_id, "variables": env_variables}}}, headers=headers) 
+    # 4. إعطاء أمر التنصيب
+    q_deploy = """mutation deploymentCreate($input: DeploymentCreateInput!) { deploymentCreate(input: $input) { id } }"""
+    railway_query(q_deploy, {"input": {"projectId": RAILWAY_PROJECT_ID, "environmentId": RAILWAY_ENV_ID, "serviceId": worker_service_id}}, api_key)
 
-            # 7. ربط الريبو بالهيكل (سيبدأ التنصيب التلقائي)
-            requests.post(url, json={"query": q_service_update, "variables": {"id": worker_service_id, "source": {"repo": "https://github.com/mustafanqnq-cmd/sarmdi-web-mine.git"}}}, headers=headers)
-
-            # 8. توجيه أمر أخير للتأكد من إقلاع الخدمتين بنجاح
-            q_deploy = """mutation deploymentCreate($input: DeploymentCreateInput!) { deploymentCreate(input: $input) { id } }"""
-            requests.post(url, json={"query": q_deploy, "variables": {"input": {"projectId": project_id, "environmentId": environment_id, "serviceId": db_service_id}}}, headers=headers)
-            requests.post(url, json={"query": q_deploy, "variables": {"input": {"projectId": project_id, "environmentId": environment_id, "serviceId": worker_service_id}}}, headers=headers)
-
-            return True, project_id
-        except Exception as e:
-            return False, f"خطأ برمجي: {str(e)}" 
+    return True, worker_service_id
 
 
-# ⪼ واجهة البوت الأساسية
+# ⪼ واجهة البوت 
 @bot.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
     user_id = event.sender_id
-    
-    # فحص إذا كان البوت مطفأ والمستخدم ليس المطور
     if not bot_config["is_active"] and user_id != ADMIN_ID:
-        return await event.reply("⚠️ **عذراً، البوت متوقف حالياً لأغراض الصيانة. يرجى المحاولة لاحقاً.**")
+        return await event.reply("⚠️ **عذراً، البوت متوقف حالياً لأغراض الصيانة.**")
 
     buttons = [
         [Button.inline("🚀 بدء تنصيب تايثون", data="start_deploy")],
         [Button.inline("📊 عدد المستخدمين", data="users_count")]
     ]
-    
-    # أزرار الإدارة الخاصة بالمطور فقط
     if user_id == ADMIN_ID:
-        buttons.append([Button.inline("➕ اضف API KEY", data="add_api_key")])
-        buttons.append([Button.inline("🗑 حذف كُل حسابات الـ API KEY", data="delete_all_keys")])
-        buttons.append([Button.inline("📴 إطفاء البوت", data="turn_off_bot"), Button.inline("🟢 تشغيل البوت", data="turn_on_bot")])
+        buttons.append([Button.inline("➕ اضف API KEY", data="add_api_key"), Button.inline("🗑 مسح الـ Keys", data="delete_all_keys")])
+        buttons.append([Button.inline("📴 إطفاء البوت" if bot_config["is_active"] else "🟢 تشغيل البوت", data="toggle_bot")])
 
-    await event.reply(
-        "**⎉╎أهلاً بك في بوت تنصيب سورس تايثون التلقائي 🚀**\n\n"
-        "⪼ من خلال هذا البوت يمكنك تنصيب السورس الخاص بك بخطوات بسيطة وآمنة تماماً.\n"
-        "⪼ الجلسة يتم استخراجها برمجياً وتُرفع مباشرة للخادم دون أن تُحفظ أو تُرسل لأحد.",
-        buttons=buttons
-    )
+    await event.reply("**⎉╎أهلاً بك في بوت تنصيب سورس تايثون التلقائي 🚀**", buttons=buttons)
 
-# ⪼ التعامل مع الأزرار
 @bot.on(events.CallbackQuery)
 async def callback_handler(event):
     data = event.data.decode('utf-8')
     user_id = event.sender_id
     
-    if data == "turn_off_bot":
-        if user_id != ADMIN_ID:
-            return await event.answer("⚠️ هذا الزر مخصص للمطور فقط!", alert=True)
-        # الإطفاء الفعلي
-        bot_config["is_active"] = False
-        await event.answer("📴 تم إطفاء استقبال الطلبات بنجاح. لن يتمكن أحد من التنصيب الآن.", alert=True)
-
-    elif data == "turn_on_bot":
-        if user_id != ADMIN_ID:
-            return await event.answer("⚠️ هذا الزر مخصص للمطور فقط!", alert=True)
-        # التشغيل الفعلي
-        bot_config["is_active"] = True
-        await event.answer("🟢 البوت يعمل بشكل طبيعي الآن ويستقبل الطلبات.", alert=True)
+    if data == "toggle_bot":
+        if user_id != ADMIN_ID: return
+        bot_config["is_active"] = not bot_config["is_active"]
+        await event.answer("تم تغيير حالة البوت", alert=True)
+        return
 
     elif data == "users_count":
         cursor.execute('SELECT COUNT(*) FROM users')
-        count = cursor.fetchone()[0]
-        await event.answer(f"📊 عدد المستخدمين المنصبين حالياً: {count}", alert=True)
-
-    elif data == "delete_all_keys":
-        if user_id != ADMIN_ID:
-            return await event.answer("⚠️ هذا الزر مخصص للمطور فقط!", alert=True)
-        
-        cursor.execute("DELETE FROM api_keys")
-        conn.commit()
-        await event.answer("🗑 تم مسح جميع مفاتيح API من البوت بنجاح! (لم تتأثر حساباتك في رايلوي)", alert=True)
+        await event.answer(f"📊 المستخدمين: {cursor.fetchone()[0]}", alert=True)
 
     elif data == "add_api_key":
-        if user_id != ADMIN_ID:
-            return await event.answer("⚠️ هذا الزر مخصص للمطور فقط!", alert=True)
-        
-        await event.answer("راجع الرسائل الخاصة لإضافة المفتاح...", alert=False)
+        if user_id != ADMIN_ID: return
         async with bot.conversation(event.chat_id, timeout=120) as conv:
-            await conv.send_message("**⎉╎أرسل الآن مفتاح `RAILWAY_API_KEY` الجديد لإضافته للمخزن:**")
-            try:
-                response = await conv.get_response()
-                new_key = response.text.strip()
-                
-                cursor.execute("INSERT INTO api_keys (key) VALUES (?)", (new_key,))
-                conn.commit()
-                
-                cursor.execute('SELECT COUNT(*) FROM api_keys')
-                total = cursor.fetchone()[0]
-                await conv.send_message(f"✅ **تمت إضافة المفتاح بنجاح!**\n📊 إجمالي المفاتيح في البوت الآن: `{total}`")
-            except sqlite3.IntegrityError:
-                await conv.send_message("⚠️ **هذا المفتاح مضاف مسبقاً في قاعدة البيانات!**")
-            except asyncio.TimeoutError:
-                await conv.send_message("⚠️ **انتهى وقت الانتظار. حاول مرة أخرى.**")
+            await conv.send_message("أرسل المفتاح:")
+            new_key = (await conv.get_response()).text.strip()
+            cursor.execute("INSERT OR IGNORE INTO api_keys (key) VALUES (?)", (new_key,))
+            conn.commit()
+            await conv.send_message("✅ تم الحفظ!")
 
     elif data == "start_deploy":
-        # منع التنصيب إذا كان البوت مطفأ (إلا إذا كان المطور هو من يحاول)
         if not bot_config["is_active"] and user_id != ADMIN_ID:
-            return await event.answer("⚠️ البوت متوقف حالياً للصيانة، يرجى المحاولة لاحقاً.", alert=True)
+            return await event.answer("⚠️ البوت متوقف حالياً للصيانة.", alert=True)
 
-        cursor.execute('SELECT project_id FROM users WHERE user_id = ?', (user_id,))
+        cursor.execute('SELECT service_id FROM users WHERE user_id = ?', (user_id,))
         if cursor.fetchone():
             return await event.answer("⚠️ لديك تنصيب قائم بالفعل!", alert=True)
         
-        await event.answer("جاري بدء عملية التنصيب...", alert=False)
+        await event.answer("جاري التجهيز...", alert=False)
         await start_deployment_process(event.chat_id, user_id)
 
 async def start_deployment_process(chat_id, user_id):
-    """ نظام المحادثة لاستخراج الجلسة والتنصيب المطور """
     async with bot.conversation(chat_id, timeout=300) as conv:
         try:
-            await conv.send_message("**⎉╎أرسل الآن رقم هاتفك مع الرمز الدولي (مثال: +964...) 📱**")
-            phone_msg = await conv.get_response()
-            phone = phone_msg.text.replace("+", "").replace(" ", "")
+            await conv.send_message("**⎉╎أرسل الآن رقم هاتفك مع الرمز الدولي 📱**")
+            phone = (await conv.get_response()).text.replace("+", "").replace(" ", "")
+            status = await conv.send_message("⏳ جاري الاتصال...")
             
-            status = await conv.send_message(f"**⎉╎جاري الاتصال بتليجرام للرقم {phone}... ⏳**")
-            
-            temp_client = TelegramClient(StringSession(), API_ID, API_HASH, device_model="TYTHON Installer", system_version="Bot", app_version="1.0.0", lang_code="ar")
+            temp_client = TelegramClient(StringSession(), API_ID, API_HASH, device_model="TYTHON", system_version="Bot", app_version="1.0.0", lang_code="ar")
             await temp_client.connect()
             
             try:
                 sent_code = await temp_client.send_code_request(phone)
             except FloodWaitError as e:
-                await status.edit(f"**⪼ محاولات كثيرة، انتظر {e.seconds} ثانية وحاول مجددًا ⏣**")
-                return
+                return await status.edit(f"انتظر {e.seconds} ثانية وحاول مجددًا.")
 
-            await status.edit("**⎉╎تم إرسال كود التحقق 📩**\n**⪼ أرسل الكود بصيغة متباعدة (مثال: 7 2 1 4 3) 🔐**")
-            
-            code_msg = await conv.get_response()
-            code = code_msg.text.replace(" ", "")
+            await status.edit("**⎉╎أرسل الكود بصيغة متباعدة (مثال: 7 2 1 4 3) 🔐**")
+            code = (await conv.get_response()).text.replace(" ", "")
             
             try:
                 await temp_client.sign_in(phone, code, phone_code_hash=sent_code.phone_code_hash)
             except SessionPasswordNeededError:
-                await conv.send_message("**⎉╎الحساب محمي بتحقق بخطوتين، أرسل كلمة السر 🔑**")
-                pass_msg = await conv.get_response()
-                await temp_client.sign_in(password=pass_msg.text)
+                await conv.send_message("**⎉╎أرسل كلمة السر (التحقق بخطوتين) 🔑**")
+                await temp_client.sign_in(password=(await conv.get_response()).text)
 
             session_string = temp_client.session.save()
             await temp_client.disconnect()
 
-            instructions = (
-                "**⎉╎تم استخراج الجلسة داخلياً وتأمينها بنجاح ✅**\n\n"
-                "**⪼ الآن، نحتاج إلى توكن البوت الخاص بك (لحساب تايثون).**\n"
-                "1. اذهب إلى @BotFather\n"
-                "2. أرسل أمر `/newbot` لصنع بوت جديد.\n"
-                "3. انسخ التوكن (Token) وأرسله هنا 👇"
-            )
-            await conv.send_message(instructions)
-            token_msg = await conv.get_response()
-            user_bot_token = token_msg.text.strip()
-
-            deploy_msg = await conv.send_message("**⏳ جاري الآن إنشاء المشروع، تهيئة قاعدة PostgreSQL بإصدار 18 وتجهيز بيئة العمل... يرجى الانتظار 🔄**")
+            await conv.send_message("**⪼ أرسل الآن توكن البوت الخاص بك من @BotFather 👇**")
+            user_bot_token = (await conv.get_response()).text.strip()
+            deploy_msg = await conv.send_message("**⏳ جاري عزل قاعدة البيانات وبناء السورس...**")
             
-            success, result = deploy_independent_project(session_string, user_bot_token, user_id)
+            success, result = await deploy_user_service(session_string, user_bot_token, user_id)
 
             if success:
-                cursor.execute('INSERT INTO users (user_id, project_id) VALUES (?, ?)', (user_id, result))
+                cursor.execute('INSERT INTO users (user_id, service_id) VALUES (?, ?)', (user_id, result))
                 conn.commit()
-                await deploy_msg.edit(
-                    f"✅ **تم تنصيب سورس تايثون وبدء التشغيل بنجاح تام!**\n\n"
-                    f"🔹 تم تنصيب PostgreSQL رسمياً وبدون أخطاء.\n"
-                    f"🔹 تم تشفير الجلسة وحقنها وإعطاء أمر الـ Deploy.\n"
-                    f"🚀 معرف مشروعك: `{result}`\n\n"
-                    f"**⪼ يمكنك الآن التوجه لبوتك واستخدام السورس.**"
-                )
+                await deploy_msg.edit("✅ **تم التنصيب وعزل البيانات بنجاح تام!**")
             else:
                 await deploy_msg.edit(f"❌ **فشل التنصيب:**\n\n{result}")
 
-        except asyncio.TimeoutError:
-            await conv.send_message("**⪼ انتهى الوقت، يرجى إعادة المحاولة من جديد ⏣**")
         except Exception as e:
             await conv.send_message(f"**⪼ حدث خطأ: {e} ⏣**")
         finally:
