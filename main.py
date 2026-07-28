@@ -2,7 +2,7 @@ import os
 import asyncio
 import requests
 import sqlite3
-import asyncpg # تأكد من إضافتها في requirements.txt
+import asyncpg
 from urllib.parse import urlparse
 from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
@@ -16,9 +16,9 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 0)) 
 
 # === [ الفارات الجديدة المطلوبة من رايلوي ] ===
-RAILWAY_PROJECT_ID = os.environ.get("RAILWAY_PROJECT_ID") # أيدي المشروع الأساسي
-RAILWAY_ENV_ID = os.environ.get("RAILWAY_ENV_ID") # أيدي البيئة (Environment)
-CENTRAL_DB_URL = os.environ.get("CENTRAL_DB_URL") # رابط الداتا بيز المركزية
+RAILWAY_PROJECT_ID = os.environ.get("RAILWAY_PROJECT_ID") 
+RAILWAY_ENV_ID = os.environ.get("RAILWAY_ENV_ID") 
+CENTRAL_DB_URL = os.environ.get("CENTRAL_DB_URL") 
 
 API_ID = 7219208 
 API_HASH = "64342b78a8d90e3f691d7a3a09112e7b" 
@@ -56,7 +56,6 @@ async def create_user_logical_database(user_id):
     """ إنشاء قاعدة بيانات فرعية معزولة للمستخدم داخل القاعدة المركزية """
     db_name = f"tython_user_{user_id}"
     try:
-        # الاتصال بالقاعدة المركزية
         sys_conn = await asyncpg.connect(CENTRAL_DB_URL)
         await sys_conn.execute(f'CREATE DATABASE "{db_name}"')
         await sys_conn.close()
@@ -64,7 +63,6 @@ async def create_user_logical_database(user_id):
         if "already exists" not in str(e).lower():
             return None, f"فشل إنشاء الداتا بيز المعزولة: {e}"
             
-    # تكوين الرابط الجديد الخاص بالمستخدم فقط
     parsed = urlparse(CENTRAL_DB_URL)
     new_url = parsed._replace(path=f"/{db_name}").geturl()
     return new_url, None
@@ -72,14 +70,12 @@ async def create_user_logical_database(user_id):
 async def deploy_user_service(session_string, user_bot_token, user_id):
     api_key = get_active_api_key()
     if not api_key:
-        return False, "⚠️ عذراً، لا يوجد مفتاح API نشط."
+        return False, "⚠️ عذراً، لا يوجد مفتاح API نشط في البوت. يرجى إضافة مفتاح من لوحة التحكم."
 
-    # 1. إنشاء الداتا بيز المعزولة للمستخدم
     user_db_url, db_err = await create_user_logical_database(user_id)
     if db_err:
         return False, db_err
 
-    # 2. إنشاء خدمة سورس تايثون داخل نفس المشروع! (لتجنب الحظر)
     q_service_create = """mutation serviceCreate($projectId: String!, $name: String!, $source: ServiceSourceInput!) { serviceCreate(input: { projectId: $projectId, name: $name, source: $source }) { id } }""" 
     data_svc, err_svc = railway_query(q_service_create, {
         "projectId": RAILWAY_PROJECT_ID, 
@@ -94,7 +90,6 @@ async def deploy_user_service(session_string, user_bot_token, user_id):
     
     worker_service_id = data_svc["serviceCreate"]["id"] 
 
-    # 3. حقن الفارات بالداتا بيز المعزولة
     env_variables = {
         "API_HASH": str(API_HASH),
         "API_ID": str(API_ID),
@@ -104,7 +99,7 @@ async def deploy_user_service(session_string, user_bot_token, user_id):
         "TZ": "Asia/Baghdad", 
         "SESSION": session_string,
         "BOT_TOKEN": user_bot_token,
-        "DATABASE_URL": user_db_url # الرابط المعزول الجديد!
+        "DATABASE_URL": user_db_url 
     }
     
     q_vars = """mutation variableCollectionUpsert($input: VariableCollectionUpsertInput!) { variableCollectionUpsert(input: $input) }""" 
@@ -115,7 +110,6 @@ async def deploy_user_service(session_string, user_bot_token, user_id):
     if err_v2:
         return False, f"⚠️ خطأ حقن الفارات: `{err_v2}`"
 
-    # 4. إعطاء أمر التنصيب
     q_deploy = """mutation deploymentCreate($input: DeploymentCreateInput!) { deploymentCreate(input: $input) { id } }"""
     railway_query(q_deploy, {"input": {"projectId": RAILWAY_PROJECT_ID, "environmentId": RAILWAY_ENV_ID, "serviceId": worker_service_id}}, api_key)
 
@@ -154,14 +148,24 @@ async def callback_handler(event):
         cursor.execute('SELECT COUNT(*) FROM users')
         await event.answer(f"📊 المستخدمين: {cursor.fetchone()[0]}", alert=True)
 
+    elif data == "delete_all_keys":
+        if user_id != ADMIN_ID: return
+        cursor.execute("DELETE FROM api_keys")
+        conn.commit()
+        await event.answer("🗑 تم مسح جميع المفاتيح بنجاح!", alert=True)
+
     elif data == "add_api_key":
         if user_id != ADMIN_ID: return
+        await event.answer("راجع الرسائل الخاصة...", alert=False)
         async with bot.conversation(event.chat_id, timeout=120) as conv:
-            await conv.send_message("أرسل المفتاح:")
-            new_key = (await conv.get_response()).text.strip()
-            cursor.execute("INSERT OR IGNORE INTO api_keys (key) VALUES (?)", (new_key,))
-            conn.commit()
-            await conv.send_message("✅ تم الحفظ!")
+            await conv.send_message("أرسل مفتاح الـ API الخاص بـ Railway الآن:")
+            try:
+                new_key = (await conv.get_response()).text.strip()
+                cursor.execute("INSERT OR IGNORE INTO api_keys (key) VALUES (?)", (new_key,))
+                conn.commit()
+                await conv.send_message("✅ تم حفظ المفتاح بنجاح!")
+            except Exception as e:
+                await conv.send_message(f"⚠️ حدث خطأ: {e}")
 
     elif data == "start_deploy":
         if not bot_config["is_active"] and user_id != ADMIN_ID:
