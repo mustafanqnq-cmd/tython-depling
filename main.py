@@ -3,17 +3,16 @@ import requests
 from telethon import TelegramClient, events
 import sqlite3
 
-# إعداد التوكنات 
+# إعداد التوكنات الأساسية للبوت الخاص بك
 BOT_TOKEN = os.environ.get("BOT_TOKEN") 
 API_ID = 7219208
 API_HASH = "64342b78a8d90e3f691d7a3a09112e7b"
 
-# التوكن الصحيح الخاص بحسابك في رايلوي
+# توكن حساب رايلوي
 RAILWAY_API_KEYS = [
     "bc397469-c89b-4841-8395-d551762c5a7d",  
 ]
 
-# قاعدة بيانات محلية لحفظ التنصيبات
 conn = sqlite3.connect('deployments.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, project_id TEXT)')
@@ -21,19 +20,10 @@ conn.commit()
 
 bot = TelegramClient('deployer_session', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
-def deploy_to_railway(session_string, user_id):
+def deploy_template_to_railway(session_string, user_bot_token, user_id):
+    # استخدام نقطة نهاية الـ Templates في رايلوي لضمان جلب السورس وقاعدة البيانات معاً
     url = "https://backboard.railway.app/graphql/v2"
     
-    env_variables = {
-        "API_HASH": "64342b78a8d90e3f691d7a3a09112e7b",
-        "API_ID": "7219208",
-        "ENV": ".",
-        "LAUNCHER_PROXY_URL": "https://falling-leafgithub-proxy.mustafanqnq.workers.dev/",
-        "LAUNCHER_SECRET": "SUPHE999",
-        "TZ": "Asia/Baghdad",
-        "SESSION": session_string
-    }
-
     api_key = RAILWAY_API_KEYS[0]
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -41,77 +31,40 @@ def deploy_to_railway(session_string, user_id):
     }
 
     try:
-        # الخطوة 1: محاولة إنشاء المشروع الأساسي
-        query_create_project = """
-        mutation projectCreate($name: String!) {
-          projectCreate(input: { name: $name }) {
-            id
-            environments { edges { node { id } } }
+        # استعلام النشر عبر القالب (Template Deployment)
+        # هذا الاستعلام يخبر رايلوي بإنشاء المشروع، جلب الريبو، إضافة داتا بيز، وحقن الفارات دفعة واحدة
+        query = """
+        mutation templateDeploy($input: TemplateDeployInput!) {
+          templateDeploy(input: $input) {
+            projectId
           }
         }
         """
-        res1 = requests.post(url, json={
-            "query": query_create_project,
-            "variables": {"name": f"Tython-User-{user_id}"}
-        }, headers=headers).json()
-
-        if "errors" in res1:
-            error_msg = res1['errors'][0]['message']
-            return False, f"⚠️ تم الرفض من Railway أثناء إنشاء المشروع.\nالسبب الرسمي: `{error_msg}`"
-
-        project_data = res1["data"]["projectCreate"]
-        project_id = project_data["id"]
-        environment_id = project_data["environments"]["edges"][0]["node"]["id"]
-
-        # الخطوة 2: ربط السورس
-        query_create_service = """
-        mutation serviceCreate($projectId: String!, $repo: String!, $name: String!) {
-          serviceCreate(input: {
-            projectId: $projectId,
-            name: $name,
-            source: { repo: $repo }
-          }) {
-            id
-          }
-        }
-        """
-        res2 = requests.post(url, json={
-            "query": query_create_service,
-            "variables": {
-                "projectId": project_id,
-                "repo": "https://github.com/mustafanqnq-cmd/sarmdi-web-mine.git",
-                "name": "tython-worker"
-            }
-        }, headers=headers).json()
-
-        if "errors" in res2:
-            error_msg2 = res2['errors'][0]['message']
-            return False, f"⚠️ تم الرفض من Railway أثناء ربط السورس.\nالسبب الرسمي: `{error_msg2}`"
-
-        service_id = res2["data"]["serviceCreate"]["id"]
-
-        # الخطوة 3: حقن الفارات (تم التصحيح هنا لاستخدام VariableCollectionUpsertInput)
-        query_upsert_vars = """
-        mutation variableCollectionUpsert($input: VariableCollectionUpsertInput!) {
-          variableCollectionUpsert(input: $input)
-        }
-        """
-        res3 = requests.post(url, json={
-            "query": query_upsert_vars,
-            "variables": {
-                "input": {
-                    "projectId": project_id,
-                    "environmentId": environment_id,
-                    "serviceId": service_id,
-                    "variables": env_variables
+        
+        # الفارات التي سيتم حقنها مباشرة في بيئة المستخدم المستضافة حديثاً
+        variables = {
+            "input": {
+                "code": "sarmdi-web-mine", # أو رابط الريبو الكامل إذا تطلب الأمر
+                "variables": {
+                    "API_HASH": "64342b78a8d90e3f691d7a3a09112e7b",
+                    "API_ID": "7219208",
+                    "ENV": ".",
+                    "LAUNCHER_PROXY_URL": "https://falling-leafgithub-proxy.mustafanqnq.workers.dev/",
+                    "LAUNCHER_SECRET": "SUPHE999",
+                    "TZ": "Asia/Baghdad",
+                    "SESSION": session_string,
+                    "BOT_TOKEN": user_bot_token # توكن بوت المستخدم الخاص
                 }
             }
-        }, headers=headers).json()
+        }
 
-        if "errors" in res3:
-            error_msg3 = res3['errors'][0]['message']
-            return False, f"خطأ في حقن الفارات: {error_msg3}"
+        response = requests.post(url, json={"query": query, "variables": variables}, headers=headers).json()
 
+        if "errors" in response:
+            error_msg = response['errors'][0]['message']
+            return False, f"⚠️ فشل نشر التيمبليت:\n`{error_msg}`"
+
+        project_id = response["data"]["templateDeploy"]["projectId"]
         return True, project_id
 
     except Exception as e:
@@ -119,13 +72,20 @@ def deploy_to_railway(session_string, user_id):
 
 @bot.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
-    await event.reply("أهلاً بك في بوت تنصيب سورس تايثون 🚀\n\nللتنصيب أرسل الأمر كالتالي:\n`/deploy SESSION_HERE`")
+    await event.reply(
+        "أهلاً بك في بوت تنصيب سورس تايثون 🚀\n\n"
+        "للبدء بالتنصيب، أرسل الأمر بالشكل التالي:\n"
+        "`/deploy SESSION_STRING USER_BOT_TOKEN`\n\n"
+        "*(ملاحظة: افصل بين السيشن وتوكن بوتك بمسافة واحدة)*"
+    )
 
-@bot.on(events.NewMessage(pattern=r'/deploy (.*)'))
+@bot.on(events.NewMessage(pattern=r'/deploy (.*) (.*)'))
 async def deploy_handler(event):
     user_id = event.sender_id
     session_string = event.pattern_match.group(1).strip()
+    user_bot_token = event.pattern_match.group(2).strip()
 
+    # التحقق مما إذا كان المستخدم منصب مسبقاً
     cursor.execute('SELECT project_id FROM users WHERE user_id = ?', (user_id,))
     existing = cursor.fetchone()
 
@@ -133,17 +93,23 @@ async def deploy_handler(event):
         await event.reply(f"⚠️ لديك تنصيب قائم بالفعل!\nمعرف مشروعك: `{existing[0]}`")
         return
 
-    msg = await event.reply("⏳ جاري الاتصال بـ Railway وتنصيب السورس... يرجى الانتظار.")
+    msg = await event.reply("⏳ جاري إنشاء البيئة الكاملة (قاعدة البيانات + الأنشر + الفارات)... يرجى الانتظار 🔄")
 
-    success, result = deploy_to_railway(session_string, user_id)
+    # تنفيذ التنصيب بنظام التيمبليت
+    success, result = deploy_template_to_railway(session_string, user_bot_token, user_id)
 
     if success:
         project_id = result
         cursor.execute('INSERT INTO users (user_id, project_id) VALUES (?, ?)', (user_id, project_id))
         conn.commit()
-        await msg.edit(f"✅ **تم التنصيب وحقن الفارات بنجاح تام!**\nمعرف المشروع: `{project_id}`")
+        await msg.edit(
+            f"✅ **تم التنصيب الشامل بنجاح تام!**\n\n"
+            f"🔹 تم إنشاء قاعدة بيانات Postgres مستقلة.\n"
+            f"🔹 تم حقن السيشن وتوكن البوت والـ LAUNCHER_SECRET.\n"
+            f"🚀 معرف المشروع الخاص بك: `{project_id}`"
+        )
     else:
         await msg.edit(f"❌ **فشل التنصيب:**\n\n{result}")
 
-print("Deployer Bot is Running...")
+print("Advanced Deployer Bot is Running...")
 bot.run_until_disconnected()
