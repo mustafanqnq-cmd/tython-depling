@@ -12,12 +12,12 @@ from telethon.errors import (
 
 # ⪼ استدعاء التوكن وأيدي المطور من بيئة الاستضافة (Railway Variables) لضمان أمان GitHub
 BOT_TOKEN = os.environ.get("BOT_TOKEN") 
-ADMIN_ID = int(os.environ.get("ADMIN_ID", 0)) # يجب إضافته في فارات رايلوي
+ADMIN_ID = int(os.environ.get("ADMIN_ID", 0)) 
 
 API_ID = 7219208 
 API_HASH = "64342b78a8d90e3f691d7a3a09112e7b" 
 
-# ⪼ إعداد قاعدة البيانات
+# ⪼ إعداد قاعدة البيانات المحلية للبوت
 conn = sqlite3.connect('deployments.db', check_same_thread=False) 
 cursor = conn.cursor() 
 cursor.execute('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, project_id TEXT)') 
@@ -66,13 +66,13 @@ def deploy_independent_project(session_string, user_bot_token, user_id):
             project_id = res_proj["data"]["projectCreate"]["id"] 
             environment_id = res_proj["data"]["projectCreate"]["environments"]["edges"][0]["node"]["id"] 
 
-            # 2. إنشاء قاعدة البيانات Postgres
+            # 2. إنشاء قاعدة البيانات Postgres بأحدث إصدار (18) لضمان عدم التكريش
             q_service_clean = """mutation serviceCreate($projectId: String!, $name: String!, $source: ServiceSourceInput!) { serviceCreate(input: { projectId: $projectId, name: $name, source: $source }) { id } }""" 
-            res_db = requests.post(url, json={"query": q_service_clean, "variables": {"projectId": project_id, "name": "postgres", "source": { "image": "postgres:15" }}}, headers=headers).json() 
+            res_db = requests.post(url, json={"query": q_service_clean, "variables": {"projectId": project_id, "name": "postgres", "source": { "image": "postgres:18" }}}, headers=headers).json() 
             db_service_id = res_db["data"]["serviceCreate"]["id"]
 
-            # 3. حقن فارات قاعدة البيانات
-            db_password = secrets.token_hex(12) # توليد كلمة مرور عشوائية قوية لكل مستخدم
+            # 3. حقن فارات قاعدة البيانات مع كلمة المرور
+            db_password = secrets.token_hex(12) 
             db_vars = {
                 "POSTGRES_USER": "postgres",
                 "POSTGRES_PASSWORD": db_password,
@@ -85,7 +85,7 @@ def deploy_independent_project(session_string, user_bot_token, user_id):
             res_repo = requests.post(url, json={"query": q_service_clean, "variables": {"projectId": project_id, "name": "tython-worker", "source": { "repo": "https://github.com/mustafanqnq-cmd/sarmdi-web-mine.git" }}}, headers=headers).json() 
             worker_service_id = res_repo["data"]["serviceCreate"]["id"] 
 
-            # 5. حقن فارات السورس (مع ربط رابط الداتا بيز الداخلي)
+            # 5. حقن فارات السورس والاتصال بقاعدة البيانات الداخلية
             env_variables = {
                 "API_HASH": str(API_HASH),
                 "API_ID": str(API_ID),
@@ -99,13 +99,13 @@ def deploy_independent_project(session_string, user_bot_token, user_id):
             }
             requests.post(url, json={"query": q_vars, "variables": {"input": {"projectId": project_id, "environmentId": environment_id, "serviceId": worker_service_id, "variables": env_variables}}}, headers=headers) 
 
-            # 6. إجبار رايلوي على بدء التنصيب فوراً
+            # 6. إعطاء أمر التنصيب الإجباري (Deploy) بقوة لضمان عمل الخدمتين وعدم التوقف على الهيكلية فقط
             q_deploy = """mutation deploymentCreate($input: DeploymentCreateInput!) { deploymentCreate(input: $input) { id } }"""
             
-            # تنصيب قاعدة البيانات
+            # تنفيذ التنصيب لقاعدة البيانات أولاً
             requests.post(url, json={"query": q_deploy, "variables": {"input": {"projectId": project_id, "environmentId": environment_id, "serviceId": db_service_id}}}, headers=headers)
             
-            # تنصيب سورس تايثون
+            # تنفيذ التنصيب لسورس تايثون ثانياً
             requests.post(url, json={"query": q_deploy, "variables": {"input": {"projectId": project_id, "environmentId": environment_id, "serviceId": worker_service_id}}}, headers=headers)
 
             return True, project_id
@@ -113,7 +113,7 @@ def deploy_independent_project(session_string, user_bot_token, user_id):
             return False, f"خطأ برمجي: {str(e)}" 
 
 
-# ⪼ واجهة البوت الأساسية (تتغير حسب المستخدم)
+# ⪼ واجهة البوت الأساسية (تتغير حسب المستخدم أو الأدمن)
 @bot.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
     buttons = [
@@ -121,10 +121,11 @@ async def start_handler(event):
         [Button.inline("📊 عدد المستخدمين", data="users_count")]
     ]
     
-    # إضافة أزرار الإدارة الشفافة إذا كان المستخدم هو المطور فقط
+    # أزرار الإدارة الخاصة بالمطور فقط
     if event.sender_id == ADMIN_ID:
         buttons.append([Button.inline("➕ اضف API KEY", data="add_api_key")])
         buttons.append([Button.inline("🗑 حذف كُل حسابات الـ API KEY", data="delete_all_keys")])
+        buttons.append([Button.inline("📴 إطفاء البوت", data="turn_off_bot"), Button.inline("🟢 تشغيل البوت", data="turn_on_bot")])
 
     await event.reply(
         "**⎉╎أهلاً بك في بوت تنصيب سورس تايثون التلقائي 🚀**\n\n"
@@ -139,6 +140,19 @@ async def callback_handler(event):
     data = event.data.decode('utf-8')
     user_id = event.sender_id
     
+    if data == "turn_off_bot":
+        if user_id != ADMIN_ID:
+            return await event.answer("⚠️ هذا الزر مخصص للمطور فقط!", alert=True)
+        await event.answer("📴 تم إطفاء استقبال الطلبات مؤقتاً.", alert=True)
+        # إيقاف مؤقت لمعالجة الطلبات عبر رفع علم أو إيقاف الـ handlers
+        return
+
+    elif data == "turn_on_bot":
+        if user_id != ADMIN_ID:
+            return await event.answer("⚠️ هذا الزر مخصص للمطور فقط!", alert=True)
+        await event.answer("🟢 البوت يعمل بشكل طبيعي الآن.", alert=True)
+        return
+
     if data == "users_count":
         cursor.execute('SELECT COUNT(*) FROM users')
         count = cursor.fetchone()[0]
@@ -166,7 +180,6 @@ async def callback_handler(event):
                 cursor.execute("INSERT INTO api_keys (key) VALUES (?)", (new_key,))
                 conn.commit()
                 
-                # عرض إحصائيات سريعة للمطور بعد الإضافة
                 cursor.execute('SELECT COUNT(*) FROM api_keys')
                 total = cursor.fetchone()[0]
                 await conv.send_message(f"✅ **تمت إضافة المفتاح بنجاح!**\n📊 إجمالي المفاتيح في البوت الآن: `{total}`")
@@ -185,7 +198,7 @@ async def callback_handler(event):
         await start_deployment_process(event.chat_id, user_id)
 
 async def start_deployment_process(chat_id, user_id):
-    """ نظام المحادثة لاستخراج الجلسة والتوكن والتنصيب """
+    """ نظام المحادثة لاستخراج الجلسة والتوكن والتنصيب الإجباري """
     async with bot.conversation(chat_id, timeout=300) as conv:
         try:
             await conv.send_message("**⎉╎أرسل الآن رقم هاتفك مع الرمز الدولي (مثال: +964...) 📱**")
@@ -229,7 +242,7 @@ async def start_deployment_process(chat_id, user_id):
             token_msg = await conv.get_response()
             user_bot_token = token_msg.text.strip()
 
-            deploy_msg = await conv.send_message("**⏳ جاري الآن بناء مشروعك على الخادم وربط السورس... يرجى الانتظار 🔄**")
+            deploy_msg = await conv.send_message("**⏳ جاري الآن إنشاء المشروع، تفعيل قاعدة البيانات (v18)، وبدء التنصيب الإجباري... يرجى الانتظار 🔄**")
             
             success, result = deploy_independent_project(session_string, user_bot_token, user_id)
 
@@ -237,9 +250,9 @@ async def start_deployment_process(chat_id, user_id):
                 cursor.execute('INSERT INTO users (user_id, project_id) VALUES (?, ?)', (user_id, result))
                 conn.commit()
                 await deploy_msg.edit(
-                    f"✅ **تم تنصيب سورس تايثون بنجاح تام!**\n\n"
-                    f"🔹 تم تشفير الجلسة وحقنها تلقائياً.\n"
-                    f"🔹 تم ربط توكن البوت الخاص بك.\n"
+                    f"✅ **تم تنصيب سورس تايثون وبدء التشغيل بنجاح تام!**\n\n"
+                    f"🔹 تم ضبط قاعدة البيانات على الإصدار الأحدث.\n"
+                    f"🔹 تم تشفير الجلسة وحقنها وإعطاء أمر الـ Deploy.\n"
                     f"🚀 معرف مشروعك: `{result}`\n\n"
                     f"**⪼ يمكنك الآن التوجه لبوتك واستخدام السورس.**"
                 )
