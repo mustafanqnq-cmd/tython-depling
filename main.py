@@ -9,9 +9,7 @@ API_ID = 7219208
 API_HASH = "64342b78a8d90e3f691d7a3a09112e7b"
 
 # توكن حساب رايلوي
-RAILWAY_API_KEYS = [
-    "bc397469-c89b-4841-8395-d551762c5a7d",  
-]
+RAILWAY_API_KEY = "bc397469-c89b-4841-8395-d551762c5a7d"
 
 conn = sqlite3.connect('deployments.db', check_same_thread=False)
 cursor = conn.cursor()
@@ -20,16 +18,15 @@ conn.commit()
 
 bot = TelegramClient('deployer_session', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
-def deploy_full_stack(session_string, user_bot_token, user_id):
+def deploy_independent_project(session_string, user_bot_token, user_id):
     url = "https://backboard.railway.app/graphql/v2"
-    api_key = RAILWAY_API_KEYS[0]
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {RAILWAY_API_KEY}",
         "Content-Type": "application/json"
     }
 
     try:
-        # 1. إنشاء المشروع الأساسي
+        # 1. إنشاء مشروع مستقل تماماً للمستخدم الجديد
         q_project = """
         mutation projectCreate($name: String!) {
           projectCreate(input: { name: $name }) {
@@ -38,54 +35,68 @@ def deploy_full_stack(session_string, user_bot_token, user_id):
           }
         }
         """
-        res1 = requests.post(url, json={"query": q_project, "variables": {"name": f"Tython-{user_id}"}}, headers=headers).json()
-        if "errors" in res1:
-            return False, f"خطأ في إنشاء المشروع: {res1['errors'][0]['message']}"
+        res_proj = requests.post(url, json={"query": q_project, "variables": {"name": f"Tython-User-{user_id}"}}, headers=headers).json()
         
-        proj_data = res1["data"]["projectCreate"]
+        if "errors" in res_proj:
+            return False, f"⚠️ عذراً، يبدو أنك وصلت لحد الحساب المجاني للمشاريع في رايلوي: `{res_proj['errors'][0]['message']}`"
+        
+        proj_data = res_proj["data"]["projectCreate"]
         project_id = proj_data["id"]
-        env_id = proj_data["environments"]["edges"][0]["node"]["id"]
+        environment_id = proj_data["environments"]["edges"][0]["node"]["id"]
 
-        # 2. إنشاء خدمة قاعدة البيانات (Postgres) داخل المشروع
-        q_db = """
+        # 2. إنشاء قاعدة بيانات Postgres مستقلة داخل مشروع هذا المستخدم
+        q_service = """
         mutation serviceCreate($input: ServiceCreateInput!) {
-          serviceCreate(input: $input) {
+          serviceCreate(input: {
+            projectId: $input.projectId,
+            name: $input.name,
+            source: $input.source
+          }) {
             id
           }
         }
         """
+        # ملاحظة GraphQL: سنقوم بتمرير المدخلات بصيغة صحيحة
+        q_service_clean = """
+        mutation serviceCreate($projectId: String!, $name: String!, $source: ServiceSourceInput!) {
+          serviceCreate(input: {
+            projectId: $projectId,
+            name: $name,
+            source: $source
+          }) {
+            id
+          }
+        }
+        """
+        
         res_db = requests.post(url, json={
-            "query": q_db,
+            "query": q_service_clean,
             "variables": {
-                "input": {
-                    "projectId": project_id,
-                    "name": "postgres",
-                    "source": { "image": "postgres:15" } # صورة بوستجرس رسمية
-                }
+                "projectId": project_id,
+                "name": "postgres",
+                "source": { "image": "postgres:15" }
             }
         }, headers=headers).json()
-        
+
         if "errors" in res_db:
             return False, f"خطأ في إنشاء قاعدة البيانات: {res_db['errors'][0]['message']}"
 
-        # 3. إنشاء خدمة السورس (الأنشر)
-        res_service = requests.post(url, json={
-            "query": q_db,
+        # 3. إنشاء خدمة السورس (الأنشر) داخل نفس المشروع
+        res_repo = requests.post(url, json={
+            "query": q_service_clean,
             "variables": {
-                "input": {
-                    "projectId": project_id,
-                    "name": "tython-worker",
-                    "source": { "repo": "https://github.com/mustafanqnq-cmd/sarmdi-web-mine.git" }
-                }
+                "projectId": project_id,
+                "name": "tython-worker",
+                "source": { "repo": "https://github.com/mustafanqnq-cmd/sarmdi-web-mine.git" }
             }
         }, headers=headers).json()
 
-        if "errors" in res_service:
-            return False, f"خطأ في ربط السورس: {res_service['errors'][0]['message']}"
+        if "errors" in res_repo:
+            return False, f"خطأ في ربط السورس: {res_repo['errors'][0]['message']}"
         
-        service_id = res_service["data"]["serviceCreate"]["id"]
+        service_id = res_repo["data"]["serviceCreate"]["id"]
 
-        # 4. حقن كافة الفارات الثابتة والمتغيرة (بما فيها توكن البوت والسيشن)
+        # 4. حقن كافة الفارات كاملة (مع ربط رابط الداتا بيز تلقائياً بالسورس الجديد)
         env_variables = {
             "API_HASH": "64342b78a8d90e3f691d7a3a09112e7b",
             "API_ID": "7219208",
@@ -95,7 +106,7 @@ def deploy_full_stack(session_string, user_bot_token, user_id):
             "TZ": "Asia/Baghdad",
             "SESSION": session_string,
             "BOT_TOKEN": user_bot_token,
-            "DATABASE_URL": "${{postgres.DATABASE_URL}}" # ربط تلقائي بقاعدة البيانات التي أنشأناها قبل قليل
+            "DATABASE_URL": "${{postgres.DATABASE_URL}}"
         }
 
         q_vars = """
@@ -108,7 +119,7 @@ def deploy_full_stack(session_string, user_bot_token, user_id):
             "variables": {
                 "input": {
                     "projectId": project_id,
-                    "environmentId": env_id,
+                    "environmentId": environment_id,
                     "serviceId": service_id,
                     "variables": env_variables
                 }
@@ -141,22 +152,23 @@ async def deploy_handler(event):
         await event.reply(f"⚠️ لديك تنصيب قائم بالفعل!\nمعرف مشروعك: `{existing[0]}`")
         return
 
-    msg = await event.reply("⏳ جاري بناء البيئة الكاملة (قاعدة بيانات Postgres + سورس الأنشر + حقن الفارات)... يرجى الانتظار 🔄")
+    msg = await event.reply("⏳ جاري إنشاء مشروع مستقل للمستخدم + قاعدة بيانات Postgres + سورس الأنشر وحقن الفارات... يرجى الانتظار 🔄")
 
-    success, result = deploy_full_stack(session_string, user_bot_token, user_id)
+    success, result = deploy_independent_project(session_string, user_bot_token, user_id)
 
     if success:
         project_id = result
         cursor.execute('INSERT INTO users (user_id, project_id) VALUES (?, ?)', (user_id, project_id))
         conn.commit()
         await msg.edit(
-            f"✅ **تم التنصيب الشامل بنجاح تام!**\n\n"
+            f"✅ **تم إنشاء المشروع المستقل وكافة المكونات بنجاح تام!**\n\n"
+            f"🔹 تم بناء مشروع جديد خاص بالمستخدم.\n"
             f"🔹 تم إنشاء قاعدة بيانات Postgres مستقلة.\n"
-            f"🔹 تم حقن السيشن، توكن بوت المستخدم، والـ LAUNCHER_SECRET.\n"
+            f"🔹 تم ربط السورس وحقن جميع الفارات كاملة.\n"
             f"🚀 معرف المشروع: `{project_id}`"
         )
     else:
         await msg.edit(f"❌ **فشل التنصيب:**\n\n{result}")
 
-print("Full-Stack Deployer Bot is Running...")
+print("Independent Deployer Bot is Running...")
 bot.run_until_disconnected()
