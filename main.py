@@ -16,10 +16,9 @@ API_HASH = os.getenv("API_HASH", "64342b78a8d90e3f691d7a3a09112e7b")
 BOT_TOKEN = os.getenv("BOT_TOKEN") 
 
 # آيديات الإدارة (أنت والمساعد @CC99V)
-ADMIN_IDS = [666822865]  # ⚠️ لا تنسَ تغييرها للـ ID الخاص بك
+ADMIN_IDS = [123456789, 987654321]  # ⚠️ لا تنسَ تغييرها للـ ID الخاص بك
 
-# مسار مستودع سورس تايثون على GitHub (مثال: "mustafanqnq-cmd/Tython")
-# يجب أن يكون المستودع عاماً (Public) ليتمكن رايلوي من سحبه بدون مصادقة
+# مسار مستودع سورس تايثون على GitHub
 USERBOT_REPO = "mustafanqnq-cmd/Sarmadi-Deploy-Web" 
 
 TOKENS_FILE = "railway_tokens.json"
@@ -225,7 +224,7 @@ async def finalize_session(chat_id, msg: Message):
         await msg.edit_text("❌ نفدت حسابات رايلوي، يرجى مراجعة المطور.")
 
 # ==========================================
-# 6. دوال التواصل مع Railway (GraphQL الحقيقية)
+# 6. دوال التواصل مع Railway (GraphQL المُصححة)
 # ==========================================
 async def railway_api_request(railway_token: str, query: str, variables: dict = None):
     url = "https://backboard.railway.app/graphql/v2"
@@ -248,7 +247,7 @@ async def railway_api_request(railway_token: str, query: str, variables: dict = 
                 text = await response.text()
                 raise Exception(f"HTTP {response.status}: {text}")
 
-# --- استعلامات GraphQL ---
+# --- استعلامات GraphQL المُصححة ---
 CREATE_PROJECT = """
 mutation CreateProject($name: String!) {
   projectCreate(input: {name: $name}) {
@@ -276,7 +275,7 @@ mutation CreateService($projectId: String!, $repo: String!) {
 """
 
 UPSERT_VARIABLES = """
-mutation UpsertVariables($projectId: String!, $environmentId: String!, $serviceId: String!, $variables: Object!) {
+mutation UpsertVariables($projectId: String!, $environmentId: String!, $serviceId: String!, $variables: Json!) {
   variableCollectionUpsert(input: {
     projectId: $projectId,
     environmentId: $environmentId,
@@ -317,7 +316,6 @@ async def deploy_to_railway(chat_id, msg: Message, bot_token, string_session, ra
             "BOT_TOKEN": bot_token,
             "API_ID": str(API_ID),
             "API_HASH": API_HASH,
-            # إذا كان سورس تايثون يحتاج أي فارات إضافية، أضفها هنا
         }
         
         await railway_api_request(
