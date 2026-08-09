@@ -12,15 +12,10 @@ from pyrogram.errors import SessionPasswordNeeded, PhoneCodeInvalid, PhoneCodeEx
 API_ID = int(os.getenv("API_ID", "7219208"))  
 API_HASH = os.getenv("API_HASH", "64342b78a8d90e3f691d7a3a09112e7b") 
 
-# هذه الفارات تضعها في لوحة رايلوي (للبوت نفسه)
 BOT_TOKEN = os.getenv("BOT_TOKEN") 
+ADMIN_IDS = [123456789, 987654321]  # ⚠️ استبدلها بالـ ID الخاص بك
 
-# آيديات الإدارة (أنت والمساعد @CC99V)
-ADMIN_IDS = [666822865]  # ⚠️ لا تنسَ تغييرها للـ ID الخاص بك
-
-# مسار مستودع سورس تايثون على GitHub
 USERBOT_REPO = "mustafanqnq-cmd/Sarmadi-Deploy-Web" 
-
 TOKENS_FILE = "railway_tokens.json"
 
 if not BOT_TOKEN:
@@ -42,14 +37,14 @@ def save_railway_tokens(tokens):
     with open(TOKENS_FILE, "w") as f:
         json.dump(tokens, f)
 
-railway_tokens = load_railway_tokens() # تحميل التوكنات عند التشغيل
+railway_tokens = load_railway_tokens() 
 user_steps = {}       
 user_data = {}        
 
 app = Client("TythonDeployBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # ==========================================
-# 3. أوامر ولوحة الإدارة (إدارة حسابات المنصبين)
+# 3. أوامر ولوحة الإدارة
 # ==========================================
 @app.on_message(filters.command("admin") & filters.user(ADMIN_IDS))
 async def admin_panel(client, message: Message):
@@ -71,7 +66,7 @@ async def admin_callbacks(client, callback_query: CallbackQuery):
     
     elif data == "admin_del_token":
         if len(railway_tokens) > 0:
-            removed = railway_tokens.pop()
+            railway_tokens.pop()
             save_railway_tokens(railway_tokens)
             await callback_query.message.reply_text("✅ تم حذف آخر توكن رايلوي تم إضافته بنجاح.")
         else:
@@ -86,7 +81,6 @@ async def admin_callbacks(client, callback_query: CallbackQuery):
             f"👥 عدد عمليات التنصيب الجارية: {users_count}"
         )
 
-# استقبال التوكن من المطور وحفظه
 @app.on_message(filters.private & filters.user(ADMIN_IDS) & ~filters.command(["start", "admin"]))
 async def admin_text_handler(client, message: Message):
     chat_id = message.chat.id
@@ -104,7 +98,7 @@ async def admin_text_handler(client, message: Message):
 @app.on_message(filters.command("start") & filters.private & ~filters.user(ADMIN_IDS))
 async def start_command(client, message: Message):
     if len(railway_tokens) == 0:
-        await message.reply_text("❌ السورس متوقف إلى اشعار اخر، تواصل مع المطور للتنصيب المُباشر @CC99V")
+        await message.reply_text("❌ السورس متوقف الى اشعار اخر، تواصل مع المطور للتنصيب المُباشر @CC99V")
         return
 
     START_TEXT = (
@@ -122,7 +116,7 @@ async def ask_for_token(client, callback_query: CallbackQuery):
     chat_id = callback_query.message.chat.id
     
     if len(railway_tokens) == 0:
-        await callback_query.message.reply_text("❌ السورس متوقف إلى اشعار اخر، تواصل مع المطور للتنصيب المُباشر @CC99V")
+        await callback_query.message.reply_text("❌ السورس متوقف الى اشعار اخر، تواصل مع المطور للتنصيب المُباشر @CC99V")
         return
         
     user_steps[chat_id] = "waiting_for_token"
@@ -224,7 +218,7 @@ async def finalize_session(chat_id, msg: Message):
         await msg.edit_text("❌ نفدت حسابات رايلوي، يرجى مراجعة المطور.")
 
 # ==========================================
-# 6. دوال التواصل مع Railway (GraphQL المُصححة)
+# 6. دوال التواصل مع Railway (GraphQL المحدثة)
 # ==========================================
 async def railway_api_request(railway_token: str, query: str, variables: dict = None):
     url = "https://backboard.railway.app/graphql/v2"
@@ -247,7 +241,6 @@ async def railway_api_request(railway_token: str, query: str, variables: dict = 
                 text = await response.text()
                 raise Exception(f"HTTP {response.status}: {text}")
 
-# --- استعلامات GraphQL المُصححة ---
 CREATE_PROJECT = """
 mutation CreateProject($name: String!) {
   projectCreate(input: {name: $name}) {
@@ -274,8 +267,9 @@ mutation CreateService($projectId: String!, $repo: String!) {
 }
 """
 
+# تم تعديل النوع إلى JSON بالأحرف الكبيرة
 UPSERT_VARIABLES = """
-mutation UpsertVariables($projectId: String!, $environmentId: String!, $serviceId: String!, $variables: Json!) {
+mutation UpsertVariables($projectId: String!, $environmentId: String!, $serviceId: String!, $variables: JSON!) {
   variableCollectionUpsert(input: {
     projectId: $projectId,
     environmentId: $environmentId,
@@ -289,19 +283,15 @@ async def deploy_to_railway(chat_id, msg: Message, bot_token, string_session, ra
     try:
         await msg.edit_text("⏳ جاري إنشاء مساحة العمل (Project) على حساب Railway...")
         
-        # 1. إنشاء المشروع
         project_name = f"Tython-{chat_id}"
         project_data = await railway_api_request(
             railway_token, CREATE_PROJECT, {"name": project_name}
         )
         project_id = project_data["projectCreate"]["id"]
-        
-        # استخراج Environment ID (البيئة الافتراضية للمشروع)
         env_id = project_data["projectCreate"]["environments"]["edges"][0]["node"]["id"]
         
         await msg.edit_text(f"✅ تم إنشاء المشروع: `{project_name}`\n🔗 جاري ربط مستودع GitHub...")
         
-        # 2. إنشاء الخدمة (Service) وربطها بمستودع GitHub
         service_data = await railway_api_request(
             railway_token, CREATE_GITHUB_SERVICE, 
             {"projectId": project_id, "repo": USERBOT_REPO}
@@ -310,7 +300,6 @@ async def deploy_to_railway(chat_id, msg: Message, bot_token, string_session, ra
         
         await msg.edit_text("⚙️ جاري حقن المتغيرات (الجلسة، التوكن، إلخ)...")
         
-        # 3. حقن المتغيرات (Variables)
         variables_to_inject = {
             "SESSION": string_session,
             "BOT_TOKEN": bot_token,
