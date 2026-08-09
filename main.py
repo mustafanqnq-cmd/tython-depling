@@ -13,7 +13,7 @@ API_ID = int(os.getenv("API_ID", "7219208"))
 API_HASH = os.getenv("API_HASH", "64342b78a8d90e3f691d7a3a09112e7b") 
 
 BOT_TOKEN = os.getenv("BOT_TOKEN") 
-ADMIN_IDS = [666822865]  # ⚠️ استبدلها بالـ ID الخاص بك
+ADMIN_IDS = [123456789, 987654321]  # ⚠️ استبدلها بالـ ID الخاص بك
 
 USERBOT_REPO = "mustafanqnq-cmd/Sarmadi-Deploy-Web" 
 TOKENS_FILE = "railway_tokens.json"
@@ -218,7 +218,7 @@ async def finalize_session(chat_id, msg: Message):
         await msg.edit_text("❌ نفدت حسابات رايلوي، يرجى مراجعة المطور.")
 
 # ==========================================
-# 6. دوال التواصل مع Railway (GraphQL المحدثة بدقة)
+# 6. دوال التواصل مع Railway (GraphQL الرسمية والمضبوطة)
 # ==========================================
 async def railway_api_request(railway_token: str, query: str, variables: dict = None):
     url = "https://backboard.railway.app/graphql/v2"
@@ -242,8 +242,8 @@ async def railway_api_request(railway_token: str, query: str, variables: dict = 
                 raise Exception(f"HTTP {response.status}: {text}")
 
 CREATE_PROJECT = """
-mutation CreateProject($name: String!) {
-  projectCreate(input: {name: $name}) {
+mutation ProjectCreate($input: ProjectCreateInput!) {
+  projectCreate(input: $input) {
     id
     environments {
       edges {
@@ -257,25 +257,17 @@ mutation CreateProject($name: String!) {
 """
 
 CREATE_GITHUB_SERVICE = """
-mutation CreateService($projectId: String!, $repo: String!) {
-  serviceCreate(input: {
-    projectId: $projectId,
-    source: { repo: $repo }
-  }) {
+mutation ServiceCreate($input: ServiceCreateInput!) {
+  serviceCreate(input: $input) {
     id
   }
 }
 """
 
-# تم تعديل نوع المتغيرات إلى EnvironmentVariables! بناءً على متطلبات Railway API
+# تم ضبط الاستعلام ليتوافق تماماً مع مدخلات Railway الرسمية (VariableCollectionUpsertInput)
 UPSERT_VARIABLES = """
-mutation UpsertVariables($projectId: String!, $environmentId: String!, $serviceId: String!, $variables: EnvironmentVariables!) {
-  variableCollectionUpsert(input: {
-    projectId: $projectId,
-    environmentId: $environmentId,
-    serviceId: $serviceId,
-    variables: $variables
-  })
+mutation VariableCollectionUpsert($input: VariableCollectionUpsertInput!) {
+  variableCollectionUpsert(input: $input)
 }
 """
 
@@ -283,23 +275,26 @@ async def deploy_to_railway(chat_id, msg: Message, bot_token, string_session, ra
     try:
         await msg.edit_text("⏳ جاري إنشاء مساحة العمل (Project) على حساب Railway...")
         
+        # 1. إنشاء المشروع
         project_name = f"Tython-{chat_id}"
         project_data = await railway_api_request(
-            railway_token, CREATE_PROJECT, {"name": project_name}
+            railway_token, CREATE_PROJECT, {"input": {"name": project_name}}
         )
         project_id = project_data["projectCreate"]["id"]
         env_id = project_data["projectCreate"]["environments"]["edges"][0]["node"]["id"]
         
         await msg.edit_text(f"✅ تم إنشاء المشروع: `{project_name}`\n🔗 جاري ربط مستودع GitHub...")
         
+        # 2. إنشاء الخدمة وربط المستودع
         service_data = await railway_api_request(
             railway_token, CREATE_GITHUB_SERVICE, 
-            {"projectId": project_id, "repo": USERBOT_REPO}
+            {"input": {"projectId": project_id, "source": {"repo": USERBOT_REPO}}}
         )
         service_id = service_data["serviceCreate"]["id"]
         
         await msg.edit_text("⚙️ جاري حقن المتغيرات (الجلسة، التوكن، إلخ)...")
         
+        # 3. حقن المتغيرات بالطريقة الصحيحة المدعومة من Railway API v2
         variables_to_inject = {
             "SESSION": string_session,
             "BOT_TOKEN": bot_token,
@@ -310,10 +305,12 @@ async def deploy_to_railway(chat_id, msg: Message, bot_token, string_session, ra
         await railway_api_request(
             railway_token, UPSERT_VARIABLES,
             {
-                "projectId": project_id,
-                "environmentId": env_id,
-                "serviceId": service_id,
-                "variables": variables_to_inject
+                "input": {
+                    "projectId": project_id,
+                    "environmentId": env_id,
+                    "serviceId": service_id,
+                    "variables": variables_to_inject
+                }
             }
         )
         
