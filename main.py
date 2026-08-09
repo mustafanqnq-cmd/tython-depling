@@ -13,7 +13,7 @@ API_ID = int(os.getenv("API_ID", "7219208"))
 API_HASH = os.getenv("API_HASH", "64342b78a8d90e3f691d7a3a09112e7b") 
 
 BOT_TOKEN = os.getenv("BOT_TOKEN") 
-ADMIN_IDS = [123456789, 987654321]  # ⚠️ استبدلها بالـ ID الخاص بك
+ADMIN_IDS = [666822865]  # ⚠️ استبدلها بالـ ID الخاص بك
 
 USERBOT_REPO = "mustafanqnq-cmd/Sarmadi-Deploy-Web" 
 TOKENS_FILE = "railway_tokens.json"
