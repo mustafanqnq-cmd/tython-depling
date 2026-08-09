@@ -218,7 +218,7 @@ async def finalize_session(chat_id, msg: Message):
         await msg.edit_text("❌ نفدت حسابات رايلوي، يرجى مراجعة المطور.")
 
 # ==========================================
-# 6. دوال التواصل مع Railway (GraphQL المحدثة)
+# 6. دوال التواصل مع Railway (GraphQL المحدثة بدقة)
 # ==========================================
 async def railway_api_request(railway_token: str, query: str, variables: dict = None):
     url = "https://backboard.railway.app/graphql/v2"
@@ -267,9 +267,9 @@ mutation CreateService($projectId: String!, $repo: String!) {
 }
 """
 
-# تم تعديل النوع إلى JSON بالأحرف الكبيرة
+# تم تعديل نوع المتغيرات إلى EnvironmentVariables! بناءً على متطلبات Railway API
 UPSERT_VARIABLES = """
-mutation UpsertVariables($projectId: String!, $environmentId: String!, $serviceId: String!, $variables: JSON!) {
+mutation UpsertVariables($projectId: String!, $environmentId: String!, $serviceId: String!, $variables: EnvironmentVariables!) {
   variableCollectionUpsert(input: {
     projectId: $projectId,
     environmentId: $environmentId,
