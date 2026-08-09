@@ -14,32 +14,36 @@ API_HASH = os.getenv("API_HASH", "64342b78a8d90e3f691d7a3a09112e7b")
 
 # هذه الفارات تضعها في لوحة رايلوي (للبوت نفسه)
 BOT_TOKEN = os.getenv("BOT_TOKEN") 
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
-if not BOT_TOKEN or not GITHUB_TOKEN:
-    print("⚠️ تحذير: يرجى إضافة BOT_TOKEN و GITHUB_TOKEN في فارات رايلوي!")
+# آيديات الإدارة (أنت والمساعد @CC99V)
+ADMIN_IDS = [666822865]  # ⚠️ لا تنسَ تغييرها للـ ID الخاص بك
 
-# آيديات الإدارة
-ADMIN_IDS = [123456789, 987654321]  
+# مسار مستودع سورس تايثون على GitHub (مثال: "mustafanqnq-cmd/Tython")
+# يجب أن يكون المستودع عاماً (Public) ليتمكن رايلوي من سحبه بدون مصادقة
+USERBOT_REPO = "mustafanqnq-cmd/Sarmadi-Deploy-Web" 
 
-GITHUB_REPO = "https://github.com/mustafanqnq-cmd/Sarmadi-Deploy-Web.git"
+TOKENS_FILE = "railway_tokens.json"
+
+if not BOT_TOKEN:
+    print("⚠️ تحذير: يرجى إضافة BOT_TOKEN في فارات رايلوي!")
 
 # ==========================================
 # 2. نظام حفظ توكنات حسابات رايلوي
 # ==========================================
-TOKENS_FILE = "railway_tokens.json"
-
 def load_railway_tokens():
     if os.path.exists(TOKENS_FILE):
-        with open(TOKENS_FILE, "r") as f:
-            return json.load(f)
+        try:
+            with open(TOKENS_FILE, "r") as f:
+                return json.load(f)
+        except:
+            return []
     return []
 
 def save_railway_tokens(tokens):
     with open(TOKENS_FILE, "w") as f:
         json.dump(tokens, f)
 
-railway_tokens = load_railway_tokens() # تحميل التوكنات المحفوظة عند تشغيل البوت
+railway_tokens = load_railway_tokens() # تحميل التوكنات عند التشغيل
 user_steps = {}       
 user_data = {}        
 
@@ -69,7 +73,7 @@ async def admin_callbacks(client, callback_query: CallbackQuery):
     elif data == "admin_del_token":
         if len(railway_tokens) > 0:
             removed = railway_tokens.pop()
-            save_railway_tokens(railway_tokens) # حفظ التغيير
+            save_railway_tokens(railway_tokens)
             await callback_query.message.reply_text("✅ تم حذف آخر توكن رايلوي تم إضافته بنجاح.")
         else:
             await callback_query.message.reply_text("⚠️ القائمة فارغة! لا توجد توكنات لحذفها.")
@@ -83,25 +87,23 @@ async def admin_callbacks(client, callback_query: CallbackQuery):
             f"👥 عدد عمليات التنصيب الجارية: {users_count}"
         )
 
-# استقبال توكن رايلوي من الإدارة
-@app.on_message(filters.private & filters.user(ADMIN_IDS))
+# استقبال التوكن من المطور وحفظه
+@app.on_message(filters.private & filters.user(ADMIN_IDS) & ~filters.command(["start", "admin"]))
 async def admin_text_handler(client, message: Message):
     chat_id = message.chat.id
     step = user_steps.get(chat_id)
 
     if step == "admin_waiting_token":
         railway_tokens.append(message.text)
-        save_railway_tokens(railway_tokens) # حفظ التوكن في الملف
+        save_railway_tokens(railway_tokens)
         user_steps.pop(chat_id, None)
         await message.reply_text("✅ تم إضافة توكن رايلوي وحفظه بنجاح! الحساب جاهز للتنصيب.")
-        return
 
 # ==========================================
 # 4. أوامر المستخدم (بدء التنصيب)
 # ==========================================
 @app.on_message(filters.command("start") & filters.private & ~filters.user(ADMIN_IDS))
 async def start_command(client, message: Message):
-    # الفحص الذكي: هل يوجد حسابات رايلوي متوفرة؟
     if len(railway_tokens) == 0:
         await message.reply_text("❌ السورس متوقف إلى اشعار اخر، تواصل مع المطور للتنصيب المُباشر @CC99V")
         return
@@ -208,50 +210,134 @@ async def finalize_session(chat_id, msg: Message):
     await temp_client.disconnect()
     
     user_steps.pop(chat_id, None)
-    await msg.edit_text(
-        "✅ **تم استخراج الجلسة بنجاح!**\n\n"
-        "جاري الآن إنشاء قاعدة البيانات ورفع السورس على خوادم Railway. يرجى الانتظار..."
-    )
+    await msg.edit_text("✅ **تم استخراج الجلسة بنجاح!**\n\nجاري الآن التواصل مع خوادم Railway لبدء التنصيب...")
     
-    # يختار البوت التوكن الأول المتاح في المخزون
-    active_railway_token = railway_tokens[0] 
-    
-    asyncio.create_task(deploy_to_railway(
-        chat_id, 
-        msg, 
-        bot_token=user_data[chat_id]["bot_token"], 
-        string_session=session_string,
-        railway_token=active_railway_token
-    ))
+    if len(railway_tokens) > 0:
+        active_railway_token = railway_tokens[0] 
+        asyncio.create_task(deploy_to_railway(
+            chat_id, 
+            msg, 
+            bot_token=user_data[chat_id]["bot_token"], 
+            string_session=session_string,
+            railway_token=active_railway_token
+        ))
+    else:
+        await msg.edit_text("❌ نفدت حسابات رايلوي، يرجى مراجعة المطور.")
 
 # ==========================================
-# 6. دالة التنصيب الفعلي (Railway API)
+# 6. دوال التواصل مع Railway (GraphQL الحقيقية)
 # ==========================================
-async def deploy_to_railway(chat_id, msg: Message, bot_token, string_session, railway_token):
+async def railway_api_request(railway_token: str, query: str, variables: dict = None):
+    url = "https://backboard.railway.app/graphql/v2"
     headers = {
         "Authorization": f"Bearer {railway_token}",
         "Content-Type": "application/json"
     }
+    payload = {"query": query}
+    if variables:
+        payload["variables"] = variables
+        
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, headers=headers, json=payload) as response:
+            if response.status == 200:
+                result = await response.json()
+                if "errors" in result:
+                    raise Exception(result['errors'][0]['message'])
+                return result.get("data", {})
+            else:
+                text = await response.text()
+                raise Exception(f"HTTP {response.status}: {text}")
 
+# --- استعلامات GraphQL ---
+CREATE_PROJECT = """
+mutation CreateProject($name: String!) {
+  projectCreate(input: {name: $name}) {
+    id
+    environments {
+      edges {
+        node {
+          id
+        }
+      }
+    }
+  }
+}
+"""
+
+CREATE_GITHUB_SERVICE = """
+mutation CreateService($projectId: String!, $repo: String!) {
+  serviceCreate(input: {
+    projectId: $projectId,
+    source: { repo: $repo }
+  }) {
+    id
+  }
+}
+"""
+
+UPSERT_VARIABLES = """
+mutation UpsertVariables($projectId: String!, $environmentId: String!, $serviceId: String!, $variables: Object!) {
+  variableCollectionUpsert(input: {
+    projectId: $projectId,
+    environmentId: $environmentId,
+    serviceId: $serviceId,
+    variables: $variables
+  })
+}
+"""
+
+async def deploy_to_railway(chat_id, msg: Message, bot_token, string_session, railway_token):
     try:
-        await asyncio.sleep(2)
-        await msg.edit_text("⏳ جاري إنشاء مساحة العمل (Project) على Railway...")
+        await msg.edit_text("⏳ جاري إنشاء مساحة العمل (Project) على حساب Railway...")
         
-        await asyncio.sleep(3)
-        await msg.edit_text("🐘 جاري إنشاء قاعدة بيانات Postgres الحديثة...")
+        # 1. إنشاء المشروع
+        project_name = f"Tython-{chat_id}"
+        project_data = await railway_api_request(
+            railway_token, CREATE_PROJECT, {"name": project_name}
+        )
+        project_id = project_data["projectCreate"]["id"]
         
-        await asyncio.sleep(3)
-        await msg.edit_text("🔗 جاري سحب السورس من GitHub وحقن المتغيرات (Vars)...")
+        # استخراج Environment ID (البيئة الافتراضية للمشروع)
+        env_id = project_data["projectCreate"]["environments"]["edges"][0]["node"]["id"]
         
-        await asyncio.sleep(2)
+        await msg.edit_text(f"✅ تم إنشاء المشروع: `{project_name}`\n🔗 جاري ربط مستودع GitHub...")
+        
+        # 2. إنشاء الخدمة (Service) وربطها بمستودع GitHub
+        service_data = await railway_api_request(
+            railway_token, CREATE_GITHUB_SERVICE, 
+            {"projectId": project_id, "repo": USERBOT_REPO}
+        )
+        service_id = service_data["serviceCreate"]["id"]
+        
+        await msg.edit_text("⚙️ جاري حقن المتغيرات (الجلسة، التوكن، إلخ)...")
+        
+        # 3. حقن المتغيرات (Variables)
+        variables_to_inject = {
+            "SESSION": string_session,
+            "BOT_TOKEN": bot_token,
+            "API_ID": str(API_ID),
+            "API_HASH": API_HASH,
+            # إذا كان سورس تايثون يحتاج أي فارات إضافية، أضفها هنا
+        }
+        
+        await railway_api_request(
+            railway_token, UPSERT_VARIABLES,
+            {
+                "projectId": project_id,
+                "environmentId": env_id,
+                "serviceId": service_id,
+                "variables": variables_to_inject
+            }
+        )
+        
         await msg.reply_text(
             "🎉 **تم التنصيب بنجاح!**\n\n"
-            "تم رفع السورس وربط قاعدة البيانات. السورس الآن في مرحلة البناء (Deploying)، "
-            "سيعمل البوت الخاص بك خلال دقائق معدودة."
+            "تم سحب السورس وحقن المتغيرات.\n"
+            "السورس الآن في مرحلة البناء (Deploying) على Railway، سيعمل اليوزر بوت الخاص بك خلال دقائق معدودة. 🚀"
         )
             
     except Exception as e:
-        await msg.reply_text(f"❌ حدث خطأ غير متوقع أثناء التنصيب: {e}\n\nيرجى التواصل مع المطور للتنصيب المُباشر @CC99V")
+        await msg.reply_text(f"❌ حدث خطأ أثناء التنصيب (Railway API):\n`{e}`\n\nيرجى التواصل مع المطور للتنصيب المُباشر @CC99V")
 
 if __name__ == "__main__":
     print("🚀 Tython Deployer Bot is Running...")
